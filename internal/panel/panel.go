@@ -4,8 +4,7 @@
 //
 // 设计约束：
 //   - 前端 go:embed 单文件（index.html），无任何外部构建依赖，与二进制同体部署；
-//   - 鉴权复用网关 api_key（Bearer），与 /v1/* 同一口径；api_key 为空 = 不鉴权
-//     （仅本机/私网使用）。面板 HTML 本身无秘密，可匿名加载，密钥只发给 /panel/api/*；
+//   - 面板使用独立 panel_key（Bearer）；面板 HTML 本身无秘密，数据接口需鉴权；
 //   - 不改写既有池语义：所有运维操作落到 pool 已有入口（Revive/Disable/Remove...），
 //     添加账号走 auth.SaveAtomic + pool.Add，重启后与 auths/ 目录天然对齐。
 package panel
@@ -190,7 +189,7 @@ func (p *Panel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // withAuth 与 server 包同口径的 Bearer 鉴权（经 httpauth 常量时间比较）；
-// api_key 为空时放行。密钥经 livecfg 快照读取：面板里改了 api_key，下一个请求
+// panel_key 为空时放行。启动与保存配置会拒绝空密钥；面板里改了 panel_key，下一个请求
 // 即用新值（无需重启）。
 func (p *Panel) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +204,7 @@ func (p *Panel) withAuth(next http.HandlerFunc) http.HandlerFunc {
 // apiKey 当前生效密钥（Live 优先，回落静态字段）。
 func (p *Panel) apiKey() string {
 	if p.cfg.Live != nil {
-		return p.cfg.Live.Load().APIKey
+		return p.cfg.Live.Load().PanelKey
 	}
 	return p.cfg.APIKey
 }

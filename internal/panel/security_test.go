@@ -5,11 +5,32 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 )
 
 func newTestPanel() *Panel {
 	// 启用鉴权：未带 key 的请求一律 401，不进入依赖 Pool/Upstream 的 handler。
 	return New(Config{Version: "test", APIKey: "test-key"})
+}
+
+func TestPanelRejectsAPIKeyWhenKeysDiffer(t *testing.T) {
+	p := New(Config{Live: livecfg.New(livecfg.Snapshot{APIKey: "api-secret", PanelKey: "panel-secret"})})
+	for _, tc := range []struct {
+		key  string
+		want int
+	}{
+		{"api-secret", http.StatusUnauthorized},
+		{"panel-secret", http.StatusNotImplemented},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/panel/api/config", nil)
+		r.Header.Set("Authorization", "Bearer "+tc.key)
+		w := httptest.NewRecorder()
+		p.ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Errorf("key=%q status=%d want=%d", tc.key, w.Code, tc.want)
+		}
+	}
 }
 
 // 面板安全响应头必须覆盖：页面、静态脚本、鉴权失败响应。

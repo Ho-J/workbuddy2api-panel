@@ -33,6 +33,17 @@ const sseOK = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\"
 	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1753600000,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n" +
 	"data: [DONE]\n\n"
 
+func TestChatBodyLimit(t *testing.T) {
+	h := NewHandler(Config{APIKey: "api-secret", MaxBodyBytes: 8})
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2"}`))
+	r.Header.Set("Authorization", "Bearer api-secret")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d want 413, body=%s", w.Code, w.Body.String())
+	}
+}
+
 // newFakeUpstream 返回一个 ChatStream 走 fake 的 upstream.Client。
 // fake 依据 Authorization 头决定行为。
 func newFakeUpstream(t *testing.T, behavior func(auth string) (status int, body string, isStream bool)) *upstream.Client {

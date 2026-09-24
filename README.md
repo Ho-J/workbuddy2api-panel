@@ -211,7 +211,18 @@ cd workbuddy2api-panel
 
 # 2. 准备配置（compose 挂载此文件，缺失会导致容器启动失败）
 cp config.example.json config.json
-#    建议编辑 config.json 设置 api_key（或留空由程序自动生成随机密钥）
+python3 - <<'PY'
+import json, secrets
+from pathlib import Path
+p = Path('config.json')
+c = json.loads(p.read_text())
+c['api_key'] = 'sk-' + secrets.token_urlsafe(24)
+c['panel_key'] = 'sk-' + secrets.token_urlsafe(24)
+p.write_text(json.dumps(c, ensure_ascii=False, indent=2) + '\n')
+p.chmod(0o600)
+PY
+mkdir -p auths data
+sudo chown -R 10001:10001 config.json auths data
 
 # 3. 启动（首次会构建镜像，约 1-2 分钟）
 docker compose up -d --build
@@ -305,14 +316,16 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 ## 配置说明
 
-**`config.example.json` 是配置项最完整的参考**：每个字段、默认值与结构都能在其中找到，示例值一律是 `test_key` 之类占位符，**不含任何真实密钥**。下表为字段含义速查。
+**`config.example.json` 是配置项参考**，密钥字段留空，部署前必须分别生成随机 `api_key` 和 `panel_key`。
 
 ### 字段速查
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `listen` | `:7863` | HTTP 监听地址 |
-| `api_key` | 空 | 网关鉴权密钥；**空 = 不鉴权直接放行**（公网必须设置） |
+| `api_key` | 随机生成 | API 调用密钥；缺失、`test_key` 或与面板密钥相同会拒绝启动 |
+| `panel_key` | 随机生成 | 面板管理密钥；与 API 调用密钥分开 |
+| `max_body_mb` | `128` | 对话请求体上限，单位 MiB；可按图片请求规模调高至 1024 |
 | `auth_dir` | `./auths` | 账号凭证目录 |
 | `state_file` | `./data/state.json` | 账号池状态持久化文件 |
 | `cooldown.soft_rate` | `600s` | 软限流（429 / 限流文案）冷却基数；同一账号连续触发按 2 倍指数退避 |
@@ -498,7 +511,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 http://127.0.0.1:7863/panel/
 ```
 
-鉴权与 API 同口径：`api_key` 非空时面板要求输入一次密钥（浏览器 localStorage 记住）；为空则直接可用。
+面板使用独立的 `panel_key`，浏览器会将输入的密钥保存在 localStorage。API 客户端只需 `api_key`。
 界面支持**明暗主题切换**（首次跟随系统偏好，点击按钮两态翻转并记住选择），左侧导航分四个视图：
 
 | 视图 | 功能 |
@@ -507,10 +520,10 @@ http://127.0.0.1:7863/panel/
 | **添加账号**（顶部按钮） | 浏览器内完成 OAuth 设备授权（显示授权链接 + 自动轮询），登录后凭证落盘并**热加载进池，免重启** |
 | **积分任务**（账号行内「任务」按钮） | 展示全部任务（进度 / 奖励分数与能量 / 状态）；「全部接受」批量报名；「一键完成」覆盖 **17 个任务**（推进进度 + 异步计分等待 + **自动领奖**，幂等可重复点）；其余任务展示操作指引 |
 | **模型与档位** | 实时查询上游：每模型的积分倍率、默认思考档、支持的档位（含「off（可关）」）、上下文长度与最大输出；若存在探测数据，最大输出列显示**实测上限与钳制告警**（见「探测模型真实输出上限」） |
-| **配置** | 在线编辑 config.json：API 密钥、定时任务（四类任务时点与开关、余额刷新间隔）、账号池与流量治理参数、上游超时与 UA、提示词模式、脱敏/粘性开关 |
+| **配置** | 在线编辑 config.json：API 与面板密钥、定时任务、账号池与流量治理参数、上游超时与 UA、提示词模式、脱敏/粘性开关 |
 | **运行日志** | 最近 500 行服务日志 + 请求表格日志（可开关自动滚动） |
 
-**配置热生效**：保存配置后，`api_key`、`cooldown.soft_rate`、`features.sanitize_blacklist_fingerprints`、
+**配置热生效**：保存配置后，`api_key`、`panel_key`、`cooldown.soft_rate`、`features.sanitize_blacklist_fingerprints`、
 `pool.*`（熔断/在途/权重）、`schedule.*`（时点/开关/余额刷新间隔）**立即生效，无需重启**；
 涉及进程装配期依赖的字段（`listen`、`auth_dir`、`state_file`、`upstream.*`、`upstash.*`、`session_sticky.ttl`）
 保存后会提示"需重启进程生效"。配置写入采用「深合并且原子替换」：只更新面板表单覆盖的键，
@@ -530,12 +543,12 @@ http://127.0.0.1:7863/panel/
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
-| `POST /v1/chat/completions` | Bearer（`api_key` 非空时） | OpenAI 兼容补全；流式/非流式；请求体上限 8 MiB |
+| `POST /v1/chat/completions` | Bearer `api_key` | OpenAI 兼容补全；流式/非流式；请求体默认上限 128 MiB |
 | `GET /v1/models` | Bearer（`api_key` 非空时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
 | `GET /status` | Bearer（`api_key` 非空时） | 账号状态汇总 + 每账号详情（积分/冷却/熔断/在途/粘性） |
 | `GET /healthz` | 无 | 健康检查：有 healthy 且未占满账号返回 200，否则 503；响应带身份标识（见下） |
 
-> 鉴权规则：仅当 `api_key` 非空才校验 `Authorization: Bearer <api_key>`；**`api_key` 为空时上述端点直接放行**；`/healthz` 恒无鉴权。
+> `api_key` 与 `panel_key` 必须分别设置。`/healthz` 恒无鉴权。
 
 `/healthz` 响应示例（200 / 503 同结构，仅状态码与计数变化）：
 
@@ -677,7 +690,7 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 2. 网络暴露与日志敏感度
 
-- 默认监听 `:7863`，compose 暴露 `0.0.0.0:7863`，**无内置 TLS**；公网部署必须设置 `api_key`，建议前置反代 / 内网
+- 默认监听 `:7863`，compose 仅映射宿主机 `127.0.0.1:7863`，**无内置 TLS**；公网部署须通过 HTTPS 反代并隔离 API 与面板路径
 - 请求日志字段：序号 / 模型 / 模式 / 状态码 / **uid 前 8 位** / TTFB / token 数——**不含** `accessToken` / `refreshToken` / `api_key` 明文（不读取 `Authorization` 头）
 - 日志写 **stdout / stderr**（容器内进入 `docker logs`），代码无任何落盘日志文件
 
@@ -707,9 +720,9 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 多图会话请求体超限怎么办？
 
-网关**不再设请求体上限**（`server.max_body_mb` 已移除，对齐上游）：任意大小的请求体都会完整读入并转发上游，超限类问题由上游自然返回错误——其响应信息量更大（能看到上游的真实策略），网关不再以 413 提前拦截。
+网关默认允许 128 MiB 请求体，适合长会话及多图请求。确有更大请求时可提高 `max_body_mb`（最多 1024，修改后重启）；超限返回 413。
 
-- 多图/长上下文会话（历史图片每轮以 base64 重发，编码再膨胀约 37%）不会再撞网关侧 413
+- 多图/长上下文会话若超过设定上限，可按实际请求规模调高该值
 - 若上游真的返回 413/超限错误，网关按既有错误分类链路如实透传（不打码、不罚号——超限是请求侧问题）
 - 客户端中途断流导致的半截 body 在读入阶段即报 `400 invalid_request`，不会把截断 JSON 喂给上游（issue #41 语义保留在读错误路径）
 
@@ -749,7 +762,7 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 | 断言 | 出处 |
 |---|---|
 | `prompt.mode` 默认 `custom` | `cmd/server/config.go:148` |
-| 请求体无网关侧上限（max_body_mb 已移除） | `internal/server/handler.go` chatCompletions 读 body 段 |
+| 请求体默认上限 128 MiB | `internal/server/handler.go` chatCompletions 读 body 段 |
 | 出站强制 `stream:true` | `internal/upstream/payload.go:28` |
 | DeepSeek 思维链注入（`thinking.type=enabled`） | `internal/upstream/thinking.go:110` |
 | 默认 `reasoning_effort` 档位 = `high` | `internal/upstream/thinking.go:32` |

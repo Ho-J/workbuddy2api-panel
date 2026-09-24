@@ -17,10 +17,12 @@ import (
 
 // Config 顶层配置。
 type Config struct {
-	Listen    string `json:"listen"`     // ":7863"
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
-	AuthDir   string `json:"auth_dir"`   // ./auths
-	StateFile string `json:"state_file"` // ./data/state.json
+	Listen    string `json:"listen"`      // ":7863"
+	APIKey    string `json:"api_key"`     // 空 = 不鉴权
+	PanelKey  string `json:"panel_key"`   // 管理面板独立密钥
+	MaxBodyMB int64  `json:"max_body_mb"` // 对话请求体上限，默认 128 MiB
+	AuthDir   string `json:"auth_dir"`    // ./auths
+	StateFile string `json:"state_file"`  // ./data/state.json
 
 	Cooldown struct {
 		// hard_credit / err_threshold / err_cooldown 三个历史键已退役：
@@ -175,6 +177,7 @@ func Default() *Config {
 		APIKey:    "",
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
+		MaxBodyMB: 128,
 	}
 	c.Cooldown.SoftRate = "600s"
 	c.Cooldown.SoftRateMax = "2h"
@@ -278,6 +281,11 @@ func WriteDefault(path string) (string, error) {
 	key := "sk-" + base64.RawURLEncoding.EncodeToString(raw)
 	c := Default()
 	c.APIKey = key
+	panelRaw := make([]byte, 18)
+	if _, err := rand.Read(panelRaw); err != nil {
+		return "", fmt.Errorf("gen panel_key: %w", err)
+	}
+	c.PanelKey = "sk-" + base64.RawURLEncoding.EncodeToString(panelRaw)
 	_ = c.normalize() // Default() 全合法，normalize 仅补齐 header/idle 超时的展示值
 	out, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
@@ -306,6 +314,9 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("WB2A_API_KEY"); v != "" {
 		c.APIKey = v
+	}
+	if v := os.Getenv("WB2A_PANEL_KEY"); v != "" {
+		c.PanelKey = v
 	}
 	if v := os.Getenv("WB2A_AUTH_DIR"); v != "" {
 		c.AuthDir = v
@@ -375,6 +386,9 @@ func applyEnv(c *Config) {
 
 func (c *Config) normalize() error {
 	var err error
+	if c.MaxBodyMB <= 0 || c.MaxBodyMB > 1024 {
+		return fmt.Errorf("max_body_mb must be between 1 and 1024")
+	}
 	if c.SoftRateDur, err = time.ParseDuration(c.Cooldown.SoftRate); err != nil {
 		return fmt.Errorf("cooldown.soft_rate: %w", err)
 	}
@@ -486,6 +500,17 @@ func (c *Config) normalize() error {
 		return err
 	}
 	return c.normalizePrompt()
+}
+
+// validateSecurity 拒绝公开示例密钥及缺失的管理密钥，避免启动后暴露账号凭证。
+func (c *Config) validateSecurity() error {
+	if c.APIKey == "" || c.APIKey == "test_key" {
+		return fmt.Errorf("api_key must be set to a private random value")
+	}
+	if c.PanelKey == "" || c.PanelKey == "test_key" || c.PanelKey == c.APIKey {
+		return fmt.Errorf("panel_key must be a distinct private random value")
+	}
+	return nil
 }
 
 // normalizePrompt 校验 prompt.mode 并按 file 加载提示词文本（custom/append 模式）。

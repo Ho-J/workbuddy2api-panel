@@ -26,10 +26,11 @@ import (
 
 // Config handler 依赖。
 type Config struct {
-	Pool      *pool.Pool
-	Upstream  *upstream.Client
-	APIKey    string // 空 = 不鉴权（静态值；与 Live 同时给出时 Live 优先）
-	MaxRotate int    // 单请求最多换号次数，默认 3
+	Pool         *pool.Pool
+	Upstream     *upstream.Client
+	APIKey       string // 空 = 不鉴权（静态值；与 Live 同时给出时 Live 优先）
+	MaxBodyBytes int64  // 对话请求体上限；零值使用 128 MiB
+	MaxRotate    int    // 单请求最多换号次数，默认 3
 	// Session 会话粘性路由器（可选；nil = 关闭粘性，纯 Pick 轮换）。
 	Session *session.Router
 	// StickyCount 返回当前粘性会话绑定数（供 /status）；nil 时报告 0。
@@ -111,6 +112,9 @@ type Handler struct {
 func NewHandler(cfg Config) *Handler {
 	if cfg.MaxRotate <= 0 {
 		cfg.MaxRotate = 3
+	}
+	if cfg.MaxBodyBytes <= 0 {
+		cfg.MaxBodyBytes = 128 << 20
 	}
 	if cfg.SoftCooldown <= 0 {
 		cfg.SoftCooldown = 600 * time.Second // 软限流基数（连续触发按指数退避放大）
@@ -470,12 +474,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 客户端 IP 提取（按请求传递到 ChatStream，不透传时 upstream 侧忽略）；
 	// 消除早年共享字段方案的并发交叉污染（issue：ClientIP 竞态）。
 	clientIP := upstream.ExtractClientIP(r)
-	// 请求体无大小上限（max_body_mb 已移除，对齐上游）：完整读入，超限类问题交由
-	// 上游自然返回错误（其响应经既有错误分类链路透出，信息量更大）。#41 的截断
+	// 请求体采用可配置的宽松上限，避免超大请求耗尽内存。#41 的截断
 	// 防御语义保留在读错误路径——移除预拦截后，截断只可能来自客户端自己断流，
 	// 读 body 出错就地 400，不把半截 JSON 喂上游 unmarshal 报 unexpected EOF 冤枉罚号。
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.cfg.MaxBodyBytes))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds configured limit")
+			return
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
 	}

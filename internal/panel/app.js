@@ -409,7 +409,7 @@ $('btnLogPin').onclick = () => {
 
 /* ── 配置 ─────────────────────────────────────────────────────────── */
 const CFG_MAP = {
-  listen: ['listen'], api_key: ['api_key'],
+  listen: ['listen'], api_key: ['api_key'], panel_key: ['panel_key'],
   checkin_hours: ['schedule', 'checkin_hours'], checkin_enabled: ['schedule', 'checkin_enabled'],
   travel_hours: ['schedule', 'travel_hours'], travel_enabled: ['schedule', 'travel_enabled'],
   activity_hours: ['schedule', 'activity_hours'], activity_enabled: ['schedule', 'activity_enabled'],
@@ -524,7 +524,7 @@ $('cfgForm').onsubmit = async ev => {
     const n = (r.restart_required || []).length;
     toast(n ? '配置已保存，其中 ' + n + ' 项需重启进程生效' : '配置已保存并立即生效', 'ok');
     // 密钥可能已改：本次会话沿用新值，避免下一次轮询被 401。
-    const k = $('cfgKey').value.trim();
+    const k = $('cfgPanelKey').value.trim();
     if (k) localStorage.setItem(LS_KEY, k);
     loadConfig();
     loadOverview(true);

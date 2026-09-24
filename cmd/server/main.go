@@ -56,19 +56,18 @@ func main() {
 		if errors.Is(err, fs.ErrNotExist) {
 			// 首次运行：目录下没有配置 → 自动落一份推荐配置（含随机 api_key）再加载。
 			// 双击 exe / 裸跑 docker 即开，无需先手工复制样例。
-			if key, werr := WriteDefault(*cfgPath); werr == nil {
-				log.Printf("config %s 不存在，已生成推荐配置（api_key=%s，记录在该文件里，可自行修改）", *cfgPath, key)
-				cfg, err = Load(*cfgPath)
+			if _, werr := WriteDefault(*cfgPath); werr != nil {
+				log.Fatalf("generate config: %v", werr)
 			}
-			if err != nil {
-				// 生成失败（目录只读等）：退回纯默认 + env（旧行为兜底），不阻塞启动。
-				log.Printf("config %s not found (auto-generate failed), using defaults+env: %v", *cfgPath, err)
-				cfg, err = Load("")
-			}
+			log.Printf("config %s 不存在，已生成随机 API 与面板密钥", *cfgPath)
+			cfg, err = Load(*cfgPath)
 		}
 		if err != nil {
 			log.Fatalf("load config: %v", err)
 		}
+	}
+	if err := cfg.validateSecurity(); err != nil {
+		log.Fatalf("unsafe config: %v", err)
 	}
 
 	auths, err := auth.LoadDir(cfg.AuthDir)
@@ -217,6 +216,7 @@ func main() {
 	// live 承载可热改字段（api_key/soft_rate/脱敏开关），面板保存配置时在线替换。
 	live := livecfg.New(livecfg.Snapshot{
 		APIKey:               cfg.APIKey,
+		PanelKey:             cfg.PanelKey,
 		SoftCooldown:         cfg.SoftRateDur,
 		SanitizeFingerprints: cfg.Features.SanitizeBlacklistFingerprints,
 	})
@@ -234,7 +234,7 @@ func main() {
 		Upstream:    up,
 		Scheduler:   sch,
 		AuthDir:     cfg.AuthDir,
-		APIKey:      cfg.APIKey,
+		APIKey:      cfg.PanelKey,
 		RedisMode:   redisMode,
 		StickyCount: sessCount,
 		Version:     appVersion,
@@ -257,6 +257,7 @@ func main() {
 		Pool:         p,
 		Upstream:     up,
 		APIKey:       cfg.APIKey,
+		MaxBodyBytes: cfg.MaxBodyMB << 20,
 		Session:      sessRouter,
 		StickyCount:  sessCount,
 		RedisMode:    redisMode,
@@ -280,8 +281,7 @@ func main() {
 		Handler:           h,
 		ReadHeaderTimeout: 30 * time.Second,
 		// ReadTimeout 覆盖整个请求读取（含 body）：防慢速 body 拖死连接。
-		// 请求体已无网关侧上限（max_body_mb 移除），60s 按常规带宽的数十 MB
-		// 上传余量取值；超大 body 慢速上传若超时，由客户端重试。
+		// 请求体有可配置的宽松上限；慢速上传仍由 ReadTimeout 回收连接。
 		ReadTimeout: 60 * time.Second,
 		// IdleTimeout keep-alive 空闲连接回收：配合 chat 出站 ctx 传播防连接泄漏堆积。
 		// 注意：SSE 流式响应期间连接非空闲，不受此项掐断；不设全局 WriteTimeout
@@ -347,6 +347,9 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	if err != nil {
 		return nil, err
 	}
+	if err := newCfg.validateSecurity(); err != nil {
+		return nil, err
+	}
 
 	// 3) 落盘（原子替换）。
 	out, err := json.MarshalIndent(merged, "", "  ")
@@ -389,6 +392,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	// 4) 热应用：能立即生效的字段全部应用，并列出仍需重启的字段。
 	live.Store(livecfg.Snapshot{
 		APIKey:               newCfg.APIKey,
+		PanelKey:             newCfg.PanelKey,
 		SoftCooldown:         newCfg.SoftRateDur,
 		SanitizeFingerprints: newCfg.Features.SanitizeBlacklistFingerprints,
 	})
@@ -425,6 +429,7 @@ func restartRequiredFields(c *Config) []string {
 		out = append(out, "state_file")
 	}
 	out = append(out, "upstream.timeout_seconds", "upstream.header_timeout_seconds", "upstream.idle_timeout_seconds")
+	out = append(out, "max_body_mb")
 	if c.Upstash.URL != "" || c.Upstash.Token != "" {
 		out = append(out, "upstash")
 	}

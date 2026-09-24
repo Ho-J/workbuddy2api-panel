@@ -22,6 +22,25 @@ func TestDefault(t *testing.T) {
 	}
 }
 
+func TestSecurityConfigRejectsMissingAndSharedKeys(t *testing.T) {
+	for _, tc := range []struct {
+		api, panel string
+		valid      bool
+	}{
+		{"", "secret-panel", false},
+		{"test_key", "secret-panel", false},
+		{"secret-api", "", false},
+		{"secret-api", "secret-api", false},
+		{"secret-api", "secret-panel", true},
+	} {
+		c := Default()
+		c.APIKey, c.PanelKey = tc.api, tc.panel
+		if (c.validateSecurity() == nil) != tc.valid {
+			t.Errorf("api=%q panel=%q valid=%v", tc.api, tc.panel, tc.valid)
+		}
+	}
+}
+
 func TestLoadFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")
