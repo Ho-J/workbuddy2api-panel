@@ -19,6 +19,7 @@ type Snapshot struct {
 	PanelKey             string        // 管理面板独立密钥
 	SoftCooldown         time.Duration // 429 软冷却基数（<=0 时调用方回退内置默认）
 	SanitizeFingerprints bool          // 出站请求体指纹脱敏
+	RecordClientInfo     bool          // 请求日志是否记录调用来源（客户端 IP / UA）
 }
 
 // Holder 原子持有当前快照。
